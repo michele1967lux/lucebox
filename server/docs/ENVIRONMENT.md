@@ -16,6 +16,7 @@ consolidation of this list into CLI flags is tracked as follow-up work.
 
 | Variable | Default | Purpose |
 |---|---|---|
+| `DFLASH_ADAPTIVE_SPEC_WIDTH` | 1 | BURN-IN KILL SWITCH: =0 disables the shared acceptance-feedback verify-width controller. Fixed per-backend width overrides still take precedence. |
 | `DFLASH_DRAFT_KV` | 1 | KILL SWITCH (remove after burn-in): =0 restores the legacy per-step drafter window recompute instead of the ring cache. |
 | `DFLASH_LAGUNA_SWA_RING` | 1 | KILL SWITCH (remove after burn-in): =0 keeps SWA layers on pool-sized caches under KVFlash. |
 | `DFLASH_PROF` | unset | DEBUG: comma list of profilers (step,verify,prefill). Replaces DFLASH_LAGUNA_{STEP,VERIFY,PREFILL}_PROF. |
@@ -72,6 +73,7 @@ consolidation of this list into CLI flags is tracked as follow-up work.
 - `DFLASH27B_PREFILL_UBATCH` - layer_split_daemon.cpp, qwen35_backend.cpp, qwen35_layer_split_adapter.cpp
 - `DFLASH_ADAPTIVE_K_DENSE` - mmid_adaptive_k.h
 - `DFLASH_ADAPTIVE_K_TAU` - mmid_adaptive_k.h
+- `DFLASH_ADAPTIVE_SPEC_WIDTH` - adaptive_spec_width.h
 - `DFLASH_ADAPTIVE_WIDTH_MIN` - adaptive_verify_width.h
 - `DFLASH_ADAPTIVE_WIDTH_THETA` - adaptive_verify_width.h
 - `DFLASH_COLD_THREADS` - moe_expert_compute_cpu.cpp

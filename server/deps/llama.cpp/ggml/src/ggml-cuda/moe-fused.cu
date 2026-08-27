@@ -263,7 +263,7 @@ static __global__ void moe_fused_kernel(
     }
 }
 
-static __global__ void laguna_moe_combine_kernel(
+static __global__ void moe_combine_kernel(
     const char * __restrict__ experts,
     const char * __restrict__ weights,
     char * __restrict__ output,
@@ -564,7 +564,7 @@ static void ggml_cuda_op_ds4_moe_owner(
     const int total = n_embd * n_tokens;
     const int block = 256;
     const int grid = (total + block - 1) / block;
-    laguna_moe_combine_kernel<<<grid, block, 0, ctx.stream()>>>(
+    moe_combine_kernel<<<grid, block, 0, ctx.stream()>>>(
         (const char *) experts.data,
         (const char *) weights->data,
         (char *) dst->data,
@@ -637,7 +637,7 @@ static void ggml_cuda_op_ds4_moe_owner_split(
     const int total = n_embd * n_tokens;
     const int block = 256;
     const int grid = (total + block - 1) / block;
-    laguna_moe_combine_kernel<<<grid, block, 0, ctx.stream()>>>(
+    moe_combine_kernel<<<grid, block, 0, ctx.stream()>>>(
         (const char *) experts.data,
         (const char *) weights->data,
         (char *) dst->data,
@@ -764,7 +764,7 @@ void ggml_cuda_op_moe_fused(ggml_backend_cuda_context & ctx, ggml_tensor * dst) 
 
         const int block = 256;
         const int grid = (total + block - 1) / block;
-        laguna_moe_combine_kernel<<<grid, block, 0, ctx.stream()>>>(
+        moe_combine_kernel<<<grid, block, 0, ctx.stream()>>>(
             (const char *) experts->data,
             (const char *) weights->data,
             (char *) dst->data,

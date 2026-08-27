@@ -2560,6 +2560,17 @@ extern "C" {
             int64_t               ff_dim,
             int64_t               n_expert_used);
 
+    // Apply one routing weight to every expert output column and reduce the
+    // expert axis. `experts` is [n_embd, n_used, n_tokens] and
+    // `expert_weights` is [n_used, n_tokens]. Backends may fuse the weighting
+    // and reduction into one kernel.
+    GGML_API struct ggml_tensor * ggml_moe_combine(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * experts,
+            struct ggml_tensor  * expert_weights);
+
+    // Compatibility alias for out-of-tree Laguna callers. New model code
+    // should use the model-neutral ggml_moe_combine API.
     GGML_API struct ggml_tensor * ggml_laguna_moe_combine(
             struct ggml_context * ctx,
             struct ggml_tensor  * experts,

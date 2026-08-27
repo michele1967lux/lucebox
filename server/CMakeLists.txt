@@ -1969,6 +1969,16 @@ if(DFLASH27B_TESTS)
     endif()
     if((DFLASH27B_GPU_BACKEND STREQUAL "cuda" OR
         DFLASH27B_GPU_BACKEND STREQUAL "hip")
+       AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_moe_combine.cpp")
+        dflash_add_ggml_gpu_executable(
+            test_moe_combine test/test_moe_combine.cpp)
+        add_test(NAME moe_combine COMMAND test_moe_combine)
+        if(TARGET check)
+            add_dependencies(check test_moe_combine)
+        endif()
+    endif()
+    if((DFLASH27B_GPU_BACKEND STREQUAL "cuda" OR
+        DFLASH27B_GPU_BACKEND STREQUAL "hip")
        AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/bench_paged_attention.cpp")
         dflash_add_ggml_gpu_executable(
             bench_paged_attention test/bench_paged_attention.cpp)

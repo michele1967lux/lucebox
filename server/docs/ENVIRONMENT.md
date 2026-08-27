@@ -27,6 +27,7 @@ consolidation of this list into CLI flags is tracked as follow-up work.
 | `DFLASH_MMID_GROUPED` | unset | Grouped MUL_MAT_ID kernel for small verify batches; candidate for CLI promotion. |
 | `DFLASH_MMID_GROUPED_TYPES` | 7 | Grouped-kernel type mask; bit 3 (`8`) opts ROCmFP2/ROCmFP3 into the path. |
 | `DFLASH_MMID_GROUPED_DEVICE` | -1 | Optional zero-based device restriction; unset/-1 applies to every eligible device. |
+| `DFLASH_MOE_FUSED_COMBINE` | unset | DEBUG/A-B: use the model-neutral fused routed-expert weighting and summation kernel. Available to DeepSeek4, Laguna, and common hybrid-MoE graphs; changes floating-point association, so keep disabled until model-level qualification. |
 | `DFLASH_DS4_MOE_TP` / `DFLASH_DS4_MOE_TP_INPROC` | unset | BURN-IN: enable DeepSeek4 route-owner expert parallelism in one process. |
 | `DFLASH_DS4_MOE_TP_BACKEND` / `DFLASH_MOE_TP_BACKEND` | peer runtime in a mixed build; compiled runtime otherwise | Select the in-process cold expert owner backend. |
 | `DFLASH_DS4_MOE_TP_GPU` | peer backend device 0 in a mixed build; other local device otherwise | Device index within the cold DeepSeek4 expert backend. |

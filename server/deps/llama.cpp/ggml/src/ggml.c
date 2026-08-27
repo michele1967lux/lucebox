@@ -8605,7 +8605,7 @@ struct ggml_tensor * ggml_moe_fused(
     return result;
 }
 
-struct ggml_tensor * ggml_laguna_moe_combine(
+struct ggml_tensor * ggml_moe_combine(
         struct ggml_context * ctx,
         struct ggml_tensor  * experts,
         struct ggml_tensor  * expert_weights) {
@@ -8627,6 +8627,13 @@ struct ggml_tensor * ggml_laguna_moe_combine(
     ggml_set_op_params_i32(result, 3, (int32_t) experts->ne[2]);
 
     return result;
+}
+
+struct ggml_tensor * ggml_laguna_moe_combine(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * experts,
+        struct ggml_tensor  * expert_weights) {
+    return ggml_moe_combine(ctx, experts, expert_weights);
 }
 
 struct ggml_tensor * ggml_ds4_moe_owner(

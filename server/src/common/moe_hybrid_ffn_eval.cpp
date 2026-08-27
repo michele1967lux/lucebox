@@ -872,7 +872,7 @@ static bool build_batched_routed_graph(
     // Weight and sum over experts: [n_embd, n_used, n_tokens] * [1, n_used, n_tokens]
     if (!defer_route_reduction && allow_fused_combine &&
         (force_fused_combine || moe_hybrid_graph_policy().fused_combine)) {
-        *out_routed = track(ggml_laguna_moe_combine(ctx, experts, wts));
+        *out_routed = track(ggml_moe_combine(ctx, experts, wts));
         return *out_routed != nullptr;
     }
 
@@ -3155,7 +3155,7 @@ static bool eval_moe_owner_expert_major_batched(
         ggml_tensor * route_major =
             ggml_get_rows(ctx, packed_table, inverse_routes);
         ggml_tensor * routed_out =
-            ggml_laguna_moe_combine(ctx, route_major, route_weights);
+            ggml_moe_combine(ctx, route_major, route_weights);
         combined_out = combined_out
             ? ggml_add(ctx, routed_out, combined_out)
             : routed_out;

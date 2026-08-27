@@ -490,7 +490,7 @@ static ggml_tensor * build_laguna_moe_block_full(ggml_context * ctx, ggml_cgraph
 
     ggml_tensor * routed = nullptr;
     if (fused_combine) {
-        routed = ggml_laguna_moe_combine(ctx, experts, weights_2d);
+        routed = ggml_moe_combine(ctx, experts, weights_2d);
     } else {
         experts = ggml_mul(ctx, experts, weights_3d);
 

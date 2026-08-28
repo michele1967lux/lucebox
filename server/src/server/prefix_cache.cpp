@@ -170,8 +170,16 @@ static bool is_strict_prefix(const std::vector<int32_t> & a,
     return std::equal(a.begin(), a.end(), b.begin());
 }
 
+static bool is_prefix_or_equal(const std::vector<int32_t> & a,
+                               const std::vector<int32_t> & b) {
+    // True iff `a` is a prefix of `b`, or the same token stream.
+    if (a.size() > b.size()) return false;
+    return std::equal(a.begin(), a.end(), b.begin());
+}
+
 int select_inline_evict_victim(const std::vector<const std::vector<int32_t> *> & ids_lru,
-                               const std::vector<bool> * protected_lru) {
+                               const std::vector<bool> * protected_lru,
+                               int exclude_idx) {
     const int n = (int)ids_lru.size();
     if (n <= 0) return 0;
     auto is_protected = [&](int i) {
@@ -181,6 +189,7 @@ int select_inline_evict_victim(const std::vector<const std::vector<int32_t> *> &
     // Oldest-first scan: prefer an unprotected leaf so sticky tools pins survive.
     int oldest_protected_leaf = -1;
     for (int i = 0; i < n; i++) {
+        if (i == exclude_idx) continue;
         bool is_ancestor = false;
         for (int j = 0; j < n; j++) {
             if (j == i) continue;
@@ -190,16 +199,49 @@ int select_inline_evict_victim(const std::vector<const std::vector<int32_t> *> &
         if (!is_protected(i)) return i;  // oldest unprotected leaf
         if (oldest_protected_leaf < 0) oldest_protected_leaf = i;
     }
+    if (exclude_idx < 0 || exclude_idx >= n) {
+        // No exclusion: the longest entry is always a leaf, so the scan above
+        // decided. Passes below exist only for the excluded-leaf case.
+        if (oldest_protected_leaf >= 0) return oldest_protected_leaf;
+        return 0;  // unreachable; pure-LRU fallback
+    }
+
+    // Every leaf is the entry this request restores from — the degenerate
+    // linear-conversation case. Sacrifice the oldest ancestor of that entry
+    // whose cached descendants all still lie on the chain leading to it:
+    // evicting it cannot orphan a live side branch. Branch points and the
+    // protected tools pin are skipped.
+    const std::vector<int32_t> & restore_ids = *ids_lru[exclude_idx];
+    for (int i = 0; i < n; i++) {
+        if (i == exclude_idx || is_protected(i)) continue;
+        if (!is_strict_prefix(*ids_lru[i], restore_ids)) continue;
+        bool has_descendant_off_chain = false;
+        for (int j = 0; j < n; j++) {
+            if (j == i) continue;
+            if (!is_strict_prefix(*ids_lru[i], *ids_lru[j])) continue;
+            if (!is_prefix_or_equal(*ids_lru[j], restore_ids)) {
+                has_descendant_off_chain = true;
+                break;
+            }
+        }
+        if (!has_descendant_off_chain) return i;
+    }
+
+    // Last resort, matching the no-exclusion path: the oldest protected leaf.
     if (oldest_protected_leaf >= 0) return oldest_protected_leaf;
-    return 0;  // unreachable (the longest entry is always a leaf); pure-LRU fallback
+
+    // Nothing can be evicted without either losing the KV this request restores
+    // from or orphaning a live branch. The caller skips the snapshot.
+    return -1;
 }
 
 int select_inline_evict_victim(const std::vector<std::vector<int32_t>> & ids_lru,
-                               const std::vector<bool> * protected_lru) {
+                               const std::vector<bool> * protected_lru,
+                               int exclude_idx) {
     std::vector<const std::vector<int32_t> *> ptrs;
     ptrs.reserve(ids_lru.size());
     for (const auto & v : ids_lru) ptrs.push_back(&v);
-    return select_inline_evict_victim(ptrs, protected_lru);
+    return select_inline_evict_victim(ptrs, protected_lru, exclude_idx);
 }
 
 int select_inline_snapshot_boundary(const std::vector<int> & boundaries,
@@ -341,7 +383,8 @@ std::pair<int, int> PrefixCache::prepare_inline_snap(
         const std::vector<int32_t> & prompt_ids,
         int restored_prefix_len,
         bool prefer_tools_boundary,
-        int forced_cut) {
+        int forced_cut,
+        int restore_slot) {
     if (disabled_) return {-1, 0};
 
     auto candidates = find_all_boundaries(prompt_ids, markers_);
@@ -377,11 +420,22 @@ std::pair<int, int> PrefixCache::prepare_inline_snap(
         std::vector<bool> protected_lru;
         ids_lru.reserve(entries_.size());
         protected_lru.reserve(entries_.size());
+        int exclude_idx = -1;
         for (const auto & e : entries_) {
+            if (restore_slot >= 0 && e.slot == restore_slot) {
+                exclude_idx = (int)ids_lru.size();
+            }
             ids_lru.push_back(&e.ids);
             protected_lru.push_back(e.protect);
         }
-        int victim = select_inline_evict_victim(ids_lru, &protected_lru);
+        int victim = select_inline_evict_victim(ids_lru, &protected_lru, exclude_idx);
+        if (victim < 0) {
+            // Evicting anything would cost this request its own restore source
+            // or orphan a live branch. Skip the snapshot; no reservation is
+            // held, so clear the protect intent staged above.
+            pending_protect_ = false;
+            return {-1, 0};
+        }
         pending_evict_key_ = entries_[victim].hash;
         has_pending_evict_ = true;
         slot = entries_[victim].slot;

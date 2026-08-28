@@ -2694,6 +2694,79 @@ TEST_CASE(ServerUnitFixture, test_evict_all_protected_falls_back) {
     TEST_ASSERT(select_inline_evict_victim(ids, &protect) == 0);
 }
 
+// ── Excluding the slot the request restores from ────────────────────────
+// Without the exclusion the deepest entry of a linear chain is the only leaf,
+// so it is picked as victim, collides with the restore source, and the HTTP
+// layer cancels the reservation — the snapshot frontier then never advances.
+
+TEST_CASE(ServerUnitFixture, test_evict_linear_chain_excludes_restore_slot_evicts_oldest_ancestor) {
+    // A ⊂ B ⊂ C ⊂ D with D restoring: D is the only leaf, so the fallback runs
+    // and sacrifices A, the shallowest entry no side branch depends on.
+    std::vector<std::vector<int32_t>> ids = {{9}, {9, 1}, {9, 1, 2}, {9, 1, 2, 3}};
+    TEST_ASSERT(select_inline_evict_victim(ids, nullptr, 3) == 0);
+    // The pre-fix behaviour, still correct without an exclusion.
+    TEST_ASSERT(select_inline_evict_victim(ids) == 3);
+}
+
+TEST_CASE(ServerUnitFixture, test_evict_excludes_active_restore_slot_prefers_other_leaf) {
+    // An unrelated leaf exists, so the chain is left untouched.
+    std::vector<std::vector<int32_t>> ids = {
+        {9}, {9, 1}, {9, 1, 2}, {9, 1, 2, 3}, {7, 7}};
+    TEST_ASSERT(select_inline_evict_victim(ids, nullptr, 3) == 4);
+}
+
+TEST_CASE(ServerUnitFixture, test_evict_branch_side_leaf_preferred_over_ancestor) {
+    // A is a branch point ({9} ⊂ {9,9}), but the side branch is itself an
+    // unprotected leaf: evicting it keeps the whole restore chain resident, so
+    // the ancestor fallback never runs.
+    std::vector<std::vector<int32_t>> ids = {
+        {9}, {9, 1}, {9, 1, 2}, {9, 1, 2, 3}, {9, 9}};
+    TEST_ASSERT(select_inline_evict_victim(ids, nullptr, 3) == 4);
+}
+
+TEST_CASE(ServerUnitFixture, test_evict_branch_point_spared_evicts_oldest_safe_ancestor) {
+    // Same tree, but the side branch is pinned. The fallback must spare A (its
+    // descendant {9,9} is off the restore chain) and take B instead.
+    std::vector<std::vector<int32_t>> ids = {
+        {9}, {9, 1}, {9, 1, 2}, {9, 1, 2, 3}, {9, 9}};
+    std::vector<bool> protect = {false, false, false, false, true};
+    const int v = select_inline_evict_victim(ids, &protect, 3);
+    TEST_ASSERT(v == 1);
+    TEST_ASSERT(v != 0);  // the branch point must survive
+    TEST_ASSERT(v != 4);  // so must the pinned side branch
+}
+
+TEST_CASE(ServerUnitFixture, test_evict_linear_chain_skips_protected_tools_pin) {
+    // The production shape: A is the protected system+tools head, so the
+    // fallback deepens to B rather than thrashing an ~18k-token pin.
+    std::vector<std::vector<int32_t>> ids = {{9}, {9, 1}, {9, 1, 2}, {9, 1, 2, 3}};
+    std::vector<bool> protect = {true, false, false, false};
+    TEST_ASSERT(select_inline_evict_victim(ids, &protect, 3) == 1);
+}
+
+TEST_CASE(ServerUnitFixture, test_evict_linear_chain_all_ancestors_protected) {
+    // Every ancestor is pinned and the only leaf is the restore source: there
+    // is no safe victim, so the caller must skip the snapshot.
+    std::vector<std::vector<int32_t>> ids = {{9}, {9, 1}, {9, 1, 2}, {9, 1, 2, 3}};
+    std::vector<bool> protect = {true, true, true, false};
+    TEST_ASSERT(select_inline_evict_victim(ids, &protect, 3) == -1);
+}
+
+TEST_CASE(ServerUnitFixture, test_evict_exclusion_no_safe_victim_single_entry) {
+    std::vector<std::vector<int32_t>> ids = {{9, 1, 2, 3}};
+    TEST_ASSERT(select_inline_evict_victim(ids, nullptr, 0) == -1);
+}
+
+TEST_CASE(ServerUnitFixture, test_evict_same_length_branches_excludes_by_identity) {
+    // Two branches of equal depth under a shared root. Which one is spared
+    // depends on the entry excluded, not on its prefix length — a length-based
+    // exclusion could not tell these two apart.
+    std::vector<std::vector<int32_t>> ids = {{9}, {9, 1, 2}, {9, 8, 7}};
+    TEST_ASSERT(ids[1].size() == ids[2].size());
+    TEST_ASSERT(select_inline_evict_victim(ids, nullptr, 1) == 2);
+    TEST_ASSERT(select_inline_evict_victim(ids, nullptr, 2) == 1);
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // PFlash config tests (model-free)
 // ═══════════════════════════════════════════════════════════════════════

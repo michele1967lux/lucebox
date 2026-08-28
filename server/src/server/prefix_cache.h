@@ -58,10 +58,26 @@ PrefixHash hash_prefix(const int32_t * ids, int count);
 // When `protected_lru` is non-null and same-sized, entries with
 // `(*protected_lru)[i] == true` are skipped unless every leaf is protected
 // (then the oldest protected leaf is chosen as a last resort).
+//
+// `exclude_idx` (default -1 = no exclusion, legacy behaviour) is the entry the
+// caller is restoring from this request: it must never be the victim, because
+// the HTTP layer would then cancel the whole reservation rather than overwrite
+// the KV it is still reading from. Excluding it exposes a degenerate case that
+// cannot arise without an exclusion: in a strictly linear conversation
+// (A ⊂ B ⊂ C ⊂ D) the deepest entry is the only leaf, so once it is excluded no
+// leaf remains and the cache could never deepen again — the snapshot frontier
+// froze for dozens of turns in a real agent session. The fallback then
+// sacrifices the oldest *safe ancestor* of the restore entry: one whose cached
+// descendants all still lie on the chain leading to it, so evicting it cannot
+// orphan a live side branch. A branch point (an ancestor with a descendant off
+// that chain) and protected ancestors (the system+tools pin) are both spared.
+// Returns -1 when no safe victim exists, meaning "skip the snapshot this time".
 int select_inline_evict_victim(const std::vector<const std::vector<int32_t> *> & ids_lru,
-                               const std::vector<bool> * protected_lru = nullptr);
+                               const std::vector<bool> * protected_lru = nullptr,
+                               int exclude_idx = -1);
 int select_inline_evict_victim(const std::vector<std::vector<int32_t>> & ids_lru,
-                               const std::vector<bool> * protected_lru = nullptr);
+                               const std::vector<bool> * protected_lru = nullptr,
+                               int exclude_idx = -1);
 
 // Pick the inline snapshot boundary for a request.
 // Default: boundary before the current user turn (second-to-last marker),
@@ -121,12 +137,18 @@ public:
     // `prefer_tools_boundary` selects the system/tools head first (see
     // select_inline_snapshot_boundary). When `forced_cut` > restored, that
     // cut is used instead (PPP pin_end, including mid-message LCP cuts).
+    // `restore_slot` is the backend slot this request restores from (-1 when it
+    // restores from nothing, or from the full/disk cache rather than an inline
+    // entry): it is never chosen as the eviction victim. Pass the slot itself,
+    // not its prefix length — two branches can share a length, and the caller
+    // already holds the slot id.
     // Returns (slot, target_cut) or (-1, 0).
     std::pair<int, int> prepare_inline_snap(
         const std::vector<int32_t> & prompt_ids,
         int restored_prefix_len = 0,
         bool prefer_tools_boundary = false,
-        int forced_cut = 0);
+        int forced_cut = 0,
+        int restore_slot = -1);
 
     // Confirm after daemon successfully saved the snapshot.
     // `protect` marks the entry non-evictable by unprotected traffic (tool pin).

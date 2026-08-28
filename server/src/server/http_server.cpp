@@ -3396,7 +3396,8 @@ HttpServer::GenerationCacheState HttpServer::prepare_generation_cache(
             effective_prompt,
             cache.using_restore ? logical_prefix_len : 0,
             prefer_tools_boundary,
-            forced_cut);
+            forced_cut,
+            cache.using_restore ? cache.cache_slot : -1);
         cache.snap_slot = prepared_snapshot.first;
         cache.snap_cut = prepared_snapshot.second;
     };
@@ -3660,7 +3661,7 @@ void HttpServer::remember_agent_turn(
 
     const int canonical_end = (int) canonical_tokens.size();
     const auto pending = prefix_cache_.prepare_inline_snap(
-        canonical_tokens, source_pos, false, canonical_end);
+        canonical_tokens, source_pos, false, canonical_end, source_slot);
     if (pending.first < 0 || pending.second != canonical_end) return;
 
     const int slot = pending.first;

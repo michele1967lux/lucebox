@@ -535,6 +535,78 @@ __device__ __forceinline__ void mix_block_accum(
     }
 }
 
+// Accumulate the same activation block into two output rows. Keeping the two
+// row folds in one j-loop makes activation reuse explicit: xc[col0 + j] has one
+// live range and feeds both independent accumulators. Each accumulator still
+// sees exactly the same ascending-j sequence and expression as
+// mix_block_accum(), so this does not reassociate either dot product.
+__device__ __forceinline__ void mix_block_accum2(
+        const uint8_t * __restrict__ b0, const uint8_t * __restrict__ b1,
+        const float * __restrict__ xc, int col0,
+        int mode, const float * __restrict__ lut, float & acc0, float & acc1) {
+#if defined(__HIP_PLATFORM_AMD__) && defined(__gfx1151__)
+    uint64_t codes0, codes1;
+    uint16_t meta0, meta1;
+    MIX_MEMCPY(&codes0, b0, sizeof(codes0));
+    MIX_MEMCPY(&meta0, b0 + MIX_QS, sizeof(meta0));
+    MIX_MEMCPY(&codes1, b1, sizeof(codes1));
+    MIX_MEMCPY(&meta1, b1 + MIX_QS, sizeof(meta1));
+    const uint8_t m00 = (uint8_t) meta0;
+    const uint8_t m01 = (uint8_t) (meta0 >> 8);
+    const uint8_t m10 = (uint8_t) meta1;
+    const uint8_t m11 = (uint8_t) (meta1 >> 8);
+#else
+    const uintptr_t addr0 = (uintptr_t) b0;
+    const uintptr_t addr1 = (uintptr_t) b1;
+    const uint8_t * base80 = (const uint8_t *) MIX_ASSUME_ALIGNED(
+            (const void *) (addr0 & ~(uintptr_t) 7), 8);
+    const uint8_t * base81 = (const uint8_t *) MIX_ASSUME_ALIGNED(
+            (const void *) (addr1 & ~(uintptr_t) 7), 8);
+    const int sh0 = (int) (addr0 & 7) * 8;
+    const int sh1 = (int) (addr1 & 7) * 8;
+    uint64_t lo0, hi0, lo1, hi1;
+    MIX_MEMCPY(&lo0, base80, 8);
+    MIX_MEMCPY(&hi0, base80 + 8, 8);
+    MIX_MEMCPY(&lo1, base81, 8);
+    MIX_MEMCPY(&hi1, base81 + 8, 8);
+    const uint64_t codes0 = (sh0 == 0) ? lo0 : ((lo0 >> sh0) | (hi0 << (64 - sh0)));
+    const uint64_t codes1 = (sh1 == 0) ? lo1 : ((lo1 >> sh1) | (hi1 << (64 - sh1)));
+    const uint8_t m00 = (uint8_t) (hi0 >> sh0);
+    const uint8_t m01 = (uint8_t) (hi0 >> (sh0 + 8));
+    const uint8_t m10 = (uint8_t) (hi1 >> sh1);
+    const uint8_t m11 = (uint8_t) (hi1 >> (sh1 + 8));
+#endif
+    if (mode == 0) {
+        const float s00 = mix_ue4m3(m00), s01 = mix_ue4m3(m01);
+        const float s10 = mix_ue4m3(m10), s11 = mix_ue4m3(m11);
+        #pragma unroll
+        for (int j = 0; j < MIX_QK; ++j) {
+            const float x = xc[col0 + j];
+            const float rs0 = (j < MIX_QK/2) ? s00 : s01;
+            const float rs1 = (j < MIX_QK/2) ? s10 : s11;
+            acc0 += rs0 * mix_fp2_fixed(mix_fp2_code_u64(codes0, j)) * x;
+            acc1 += rs1 * mix_fp2_fixed(mix_fp2_code_u64(codes1, j)) * x;
+        }
+    } else {
+        const float s00 = mix_ue4m3(m00 & 0x7F), s01 = mix_ue4m3(m01 & 0x7F);
+        const float s10 = mix_ue4m3(m10 & 0x7F), s11 = mix_ue4m3(m11 & 0x7F);
+        const float * bk00 = lut + (m00 >> 7) * MIX_K;
+        const float * bk01 = lut + (m01 >> 7) * MIX_K;
+        const float * bk10 = lut + (m10 >> 7) * MIX_K;
+        const float * bk11 = lut + (m11 >> 7) * MIX_K;
+        #pragma unroll
+        for (int j = 0; j < MIX_QK; ++j) {
+            const float x = xc[col0 + j];
+            const float rs0 = (j < MIX_QK/2) ? s00 : s01;
+            const float rs1 = (j < MIX_QK/2) ? s10 : s11;
+            const float * rbk0 = (j < MIX_QK/2) ? bk00 : bk01;
+            const float * rbk1 = (j < MIX_QK/2) ? bk10 : bk11;
+            acc0 += rs0 * rbk0[mix_fp2_code_u64(codes0, j)] * x;
+            acc1 += rs1 * rbk1[mix_fp2_code_u64(codes1, j)] * x;
+        }
+    }
+}
+
 // The lane's block loop is unrolled by MIX_UNROLL into a SINGLE accumulator kept
 // in the exact original block order (acc += dot(blk), stride MIX_WARP), so the
 // f32 output is bit-for-bit identical to the un-unrolled path — required because
@@ -688,13 +760,15 @@ __global__ void mix_matvec_rocmfp2_slice_kernel(
         #pragma unroll
         for (int u = 0; u < MIX_UNROLL; ++u) {
             const int b = blk + u * MIX_WARP;
-            mix_block_accum(rowbase0 + (int64_t) b * MIX_BLOCK_BYTES, xcol, b * MIX_QK, mode, s_lut, acc0);
-            mix_block_accum(rowbase1 + (int64_t) b * MIX_BLOCK_BYTES, xcol, b * MIX_QK, mode, s_lut, acc1);
+            mix_block_accum2(rowbase0 + (int64_t) b * MIX_BLOCK_BYTES,
+                             rowbase1 + (int64_t) b * MIX_BLOCK_BYTES,
+                             xcol, b * MIX_QK, mode, s_lut, acc0, acc1);
         }
     }
     for (; blk < nb; blk += MIX_WARP) {
-        mix_block_accum(rowbase0 + (int64_t) blk * MIX_BLOCK_BYTES, xcol, blk * MIX_QK, mode, s_lut, acc0);
-        mix_block_accum(rowbase1 + (int64_t) blk * MIX_BLOCK_BYTES, xcol, blk * MIX_QK, mode, s_lut, acc1);
+        mix_block_accum2(rowbase0 + (int64_t) blk * MIX_BLOCK_BYTES,
+                         rowbase1 + (int64_t) blk * MIX_BLOCK_BYTES,
+                         xcol, blk * MIX_QK, mode, s_lut, acc0, acc1);
     }
     #pragma unroll
     for (int off = MIX_WARP/2; off > 0; off >>= 1) {
@@ -828,20 +902,24 @@ __global__ void mix_matvec_rocmfp2_moe_kernel(
         #pragma unroll
         for (int u = 0; u < MIX_UNROLL; ++u) {
             const int b = blk + u * MIX_WARP;
-            mix_block_accum(rowbase0 + (int64_t) b * MIX_BLOCK_BYTES, xcol, b * MIX_QK, mode, s_lut, acc0);
-            mix_block_accum(rowbase1 + (int64_t) b * MIX_BLOCK_BYTES, xcol, b * MIX_QK, mode, s_lut, acc1);
+            mix_block_accum2(rowbase0 + (int64_t) b * MIX_BLOCK_BYTES,
+                             rowbase1 + (int64_t) b * MIX_BLOCK_BYTES,
+                             xcol, b * MIX_QK, mode, s_lut, acc0, acc1);
             if (DUAL_GLU) {
-                mix_block_accum(growbase0 + (int64_t) b * MIX_BLOCK_BYTES, xcol, b * MIX_QK, gmode, s_lut + 2 * MIX_K, gacc0);
-                mix_block_accum(growbase1 + (int64_t) b * MIX_BLOCK_BYTES, xcol, b * MIX_QK, gmode, s_lut + 2 * MIX_K, gacc1);
+                mix_block_accum2(growbase0 + (int64_t) b * MIX_BLOCK_BYTES,
+                                 growbase1 + (int64_t) b * MIX_BLOCK_BYTES,
+                                 xcol, b * MIX_QK, gmode, s_lut + 2 * MIX_K, gacc0, gacc1);
             }
         }
     }
     for (; blk < nb; blk += MIX_WARP) {
-        mix_block_accum(rowbase0 + (int64_t) blk * MIX_BLOCK_BYTES, xcol, blk * MIX_QK, mode, s_lut, acc0);
-        mix_block_accum(rowbase1 + (int64_t) blk * MIX_BLOCK_BYTES, xcol, blk * MIX_QK, mode, s_lut, acc1);
+        mix_block_accum2(rowbase0 + (int64_t) blk * MIX_BLOCK_BYTES,
+                         rowbase1 + (int64_t) blk * MIX_BLOCK_BYTES,
+                         xcol, blk * MIX_QK, mode, s_lut, acc0, acc1);
         if (DUAL_GLU) {
-            mix_block_accum(growbase0 + (int64_t) blk * MIX_BLOCK_BYTES, xcol, blk * MIX_QK, gmode, s_lut + 2 * MIX_K, gacc0);
-            mix_block_accum(growbase1 + (int64_t) blk * MIX_BLOCK_BYTES, xcol, blk * MIX_QK, gmode, s_lut + 2 * MIX_K, gacc1);
+            mix_block_accum2(growbase0 + (int64_t) blk * MIX_BLOCK_BYTES,
+                             growbase1 + (int64_t) blk * MIX_BLOCK_BYTES,
+                             xcol, blk * MIX_QK, gmode, s_lut + 2 * MIX_K, gacc0, gacc1);
         }
     }
     #pragma unroll

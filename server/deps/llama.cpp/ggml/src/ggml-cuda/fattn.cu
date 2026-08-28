@@ -2425,13 +2425,22 @@ static bool ggml_cuda_ds4_flash_attn_d512_f32(
             }
             CUDA_CHECK(cudaGetLastError());
         }
-        // Experimental AITER-style split-KV schedule, implemented directly in
-        // the native HIP backend.  Keep it opt-in until matched output and
-        // throughput checks show that the extra reduction pays for itself.
+        // AITER-style split-KV schedule, implemented directly in the native HIP
+        // backend. Matched Strix Halo profiling showed a bit-identical output,
+        // about -58% attention time and +2-3% decode throughput, so make it the
+        // gfx1151 default. Other devices remain opt-in until measured.
         constexpr int split_kv_max_decode_tokens = 8;
+        const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
+        const bool split_kv_default =
+            cc == GGML_CUDA_CC_OFFSET_AMD + 0x1151;
+        const bool split_kv_forced =
+            getenv("GGML_CUDA_MLA_SPLIT_KV") != nullptr ||
+            getenv("GGML_DS4_FA_SPLIT_KV") != nullptr;
+        const bool split_kv_disabled =
+            getenv("GGML_CUDA_MLA_NO_SPLIT_KV") != nullptr ||
+            getenv("GGML_DS4_FA_NO_SPLIT_KV") != nullptr;
         if (indexed_mask && n_tokens <= split_kv_max_decode_tokens &&
-            (getenv("GGML_CUDA_MLA_SPLIT_KV") != nullptr ||
-             getenv("GGML_DS4_FA_SPLIT_KV") != nullptr)) {
+            !split_kv_disabled && (split_kv_forced || split_kv_default)) {
             constexpr int split_count = 2;
             const int split_stride =
                 (raw_window + indexed_capacity + split_count - 1) /

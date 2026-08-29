@@ -101,6 +101,10 @@ struct ModelCard {
 // strips characters outside `[a-z0-9.-]`. Exposed for tests/banner.
 std::string normalize_model_card_stem(const std::string & general_name);
 
+// Model-specific prompt policy. Qwen3.8 27B 0814 is trained to enter its
+// thinking block by default; other models retain the legacy opt-in default.
+bool default_thinking_for_model(const std::string & general_name);
+
 // Resolve the model card for the loaded GGUF.
 //
 // Search order (spec §3.1):

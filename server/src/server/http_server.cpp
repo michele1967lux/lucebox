@@ -1836,9 +1836,8 @@ void apply_request_reasoning(
         const json & body, const ServerConfig & config, ParsedRequest & req) {
     // Explicit thinking budgets override reasoning-effort tiers. Template
     // kwargs can still override whether the rendered prompt enables thinking.
-    // Default: thinking OFF (Qwen3.6 thinking wrecks DFlash acceptance
-    // rates; clients opt in explicitly).
-    bool enable_thinking = false;
+    // Model policy is lowest precedence; explicit request fields win below.
+    bool enable_thinking = config.default_enable_thinking;
     int request_budget_tokens = -1;
     int request_reply_budget = -1;
     int effort_phase1_cap = -1;

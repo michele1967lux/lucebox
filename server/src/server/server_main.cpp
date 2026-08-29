@@ -1021,6 +1021,11 @@ int main(int argc, char ** argv) {
         general_name,
         general_arch,
         /*repo_root_hint=*/"");
+    sconfig.default_enable_thinking = default_thinking_for_model(general_name);
+    std::fprintf(stderr,
+        "[server] thinking default: %s (general.name='%s')\n",
+        sconfig.default_enable_thinking ? "enabled" : "disabled",
+        general_name.c_str());
 
     // Apply each tunable to sconfig only if the operator did NOT set it
     // via CLI. CLI always wins (spec §3.1 source #1).

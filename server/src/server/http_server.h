@@ -96,6 +96,9 @@ struct ServerConfig {
     // Extend the existing prefix cache through generated tool-call turns.
     bool        agent_turn_cache = false;
 
+    // Prompt-rendering default selected from the loaded model identity.
+    bool        default_enable_thinking = false;
+
     // Pin-Friendly Prompt Processor (PPP): LCP pin_end + optional rearrange.
     // See docs/PIN_FRIENDLY_PROMPT.md. Env: DFLASH_PPP=0|1,
     // DFLASH_PPP_REARRANGE=0|1, DFLASH_PPP_LCP_WINDOW=N,

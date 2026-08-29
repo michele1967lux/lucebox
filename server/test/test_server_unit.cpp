@@ -5397,6 +5397,52 @@ TEST_CASE(ServerUnitFixture, test_model_card_family_fallback_deepseek4) {
     TEST_ASSERT(unknown.source_label != "family:not-a-real-arch");
 }
 
+TEST_CASE(ServerUnitFixture, test_qwen38_model_card_resolves_and_applies_sampling_defaults) {
+    const auto card = dflash::common::resolve_model_card(
+        "", "Qwen3.8 27B 0814", "qwen35", ".");
+
+    TEST_ASSERT(card.source_label.find("qwen3.8-27b-0814.json") != std::string::npos);
+    TEST_ASSERT(card.source_label != "family:qwen35");
+    TEST_ASSERT(card.max_tokens == 32768);
+    TEST_ASSERT(card.sampling.has_temperature);
+    TEST_ASSERT(card.sampling.has_top_p);
+    TEST_ASSERT(card.sampling.has_top_k);
+    TEST_ASSERT(card.sampling.has_min_p);
+    TEST_ASSERT(card.sampling.has_presence_penalty);
+    TEST_ASSERT(card.sampling.has_repetition_penalty);
+    TEST_ASSERT(std::fabs(card.sampling.temperature - 1.0f) < 0.001f);
+    TEST_ASSERT(std::fabs(card.sampling.top_p - 0.95f) < 0.001f);
+    TEST_ASSERT(card.sampling.top_k == 20);
+    TEST_ASSERT(std::fabs(card.sampling.min_p) < 0.001f);
+    TEST_ASSERT(std::fabs(card.sampling.presence_penalty) < 0.001f);
+    TEST_ASSERT(std::fabs(card.sampling.repetition_penalty - 1.0f) < 0.001f);
+
+    const SamplerCfg inherited = parse_request_sampler(json::object(), card.sampling);
+    TEST_ASSERT(std::fabs(inherited.temp - 1.0f) < 0.001f);
+    TEST_ASSERT(std::fabs(inherited.top_p - 0.95f) < 0.001f);
+    TEST_ASSERT(inherited.top_k == 20);
+    TEST_ASSERT(std::fabs(inherited.pres_pen) < 0.001f);
+    TEST_ASSERT(std::fabs(inherited.rep_pen - 1.0f) < 0.001f);
+    TEST_ASSERT(inherited.needs_logit_processing());
+
+    const SamplerCfg overridden = parse_request_sampler({
+        {"temperature", 0.2f},
+        {"top_p", 0.8f},
+        {"top_k", 7},
+        {"presence_penalty", 0.4f},
+        {"repetition_penalty", 1.2f},
+    }, card.sampling);
+    TEST_ASSERT(std::fabs(overridden.temp - 0.2f) < 0.001f);
+    TEST_ASSERT(std::fabs(overridden.top_p - 0.8f) < 0.001f);
+    TEST_ASSERT(overridden.top_k == 7);
+    TEST_ASSERT(std::fabs(overridden.pres_pen - 0.4f) < 0.001f);
+    TEST_ASSERT(std::fabs(overridden.rep_pen - 1.2f) < 0.001f);
+
+    // min_p is parsed and exposed in the card, but SamplerCfg currently has
+    // no min_p member and parse_request_sampler does not apply it.
+    TEST_ASSERT(card.raw_json["sampling"]["min_p"].get<float>() == 0.0f);
+}
+
 TEST_CASE(ServerUnitFixture, test_props_model_card_wholesale_sidecar) {
     // When a sidecar was loaded, /props.model_card should be the parsed
     // sidecar JSON verbatim — *all* fields from the file, not just the

@@ -1,0 +1,15 @@
+{
+  "name": "Qwen3.8 27B 0814",
+  "source": "https://huggingface.co/Qwen/Qwen3.8-27B",
+  "verified_at": "2026-08-29",
+  "max_tokens": 32768,
+  "sampling": {
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "top_k": 20,
+    "min_p": 0.0,
+    "presence_penalty": 0.0,
+    "repetition_penalty": 1.0
+  },
+  "notes": "Sampling values are the Qwen-published thinking-mode defaults for Qwen3.8-27B; generation_config.json independently confirms do_sample=true, temperature=1.0, top_p=0.95, and top_k=20. max_tokens=32768 deliberately preserves the existing family:qwen35 fallback because the cited upstream sampling sources do not establish a different Lucebox combined output cap. No complex-problem budget, reasoning tiers, or thinking hint is asserted. min_p=0.0 is retained for source fidelity but the current Lucebox SamplerCfg/parse_request_sampler path does not apply min_p. Ollama's draft_num_predict=4 is inference-engine-specific and is deliberately omitted."
+}

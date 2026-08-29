@@ -424,8 +424,4 @@ ModelCard resolve_model_card(const std::string & gguf_path,
     return card;
 }
 
-bool default_thinking_for_model(const std::string & general_name) {
-    return normalize_model_card_stem(general_name) == "qwen3.8-27b-0814";
-}
-
 }  // namespace dflash::common

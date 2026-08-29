@@ -2959,59 +2959,13 @@ static ParsedRequest resolve_deepseek_reasoning(const json & body) {
     return req;
 }
 
-static ParsedRequest resolve_qwen_reasoning(
-        const json & body, bool default_enable_thinking = false) {
+static ParsedRequest resolve_qwen_reasoning(const json & body) {
     ServerConfig config = deepseek_reasoning_test_config();
     config.arch = "qwen35";
-    config.default_enable_thinking = default_enable_thinking;
     ParsedRequest req;
     req.max_output = 1000;
     apply_request_reasoning(body, config, req);
     return req;
-}
-
-TEST_CASE(ServerUnitFixture, test_qwen38_default_thinking_and_request_precedence) {
-    TEST_ASSERT(dflash::common::default_thinking_for_model("Qwen3.8 27B 0814"));
-    TEST_ASSERT(!dflash::common::default_thinking_for_model("Qwen3.6 27B"));
-    TEST_ASSERT(!dflash::common::default_thinking_for_model("Qwen3.5 27B"));
-
-    const std::vector<ChatMessage> messages = {{"user", "Hello"}};
-    const ParsedRequest omitted = resolve_qwen_reasoning(
-        json::object(), /*default_enable_thinking=*/true);
-    TEST_ASSERT(omitted.thinking_enabled);
-    const std::string thinking_prompt = render_chat_template(
-        messages, ChatFormat::QWEN3, true, omitted.thinking_enabled);
-    const std::string thinking_suffix = "<think>\n";
-    TEST_ASSERT(thinking_prompt.size() >= thinking_suffix.size());
-    TEST_ASSERT(thinking_prompt.compare(
-        thinking_prompt.size() - thinking_suffix.size(),
-        thinking_suffix.size(), thinking_suffix) == 0);
-
-    const ParsedRequest disabled = resolve_qwen_reasoning({
-        {"reasoning", {{"effort", "max"}}},
-        {"thinking", {{"type", "enabled"}}},
-        {"chat_template_kwargs", {
-            {"thinking", true},
-            {"enable_thinking", false},
-        }},
-    }, true);
-    TEST_ASSERT(!disabled.thinking_enabled);
-    const std::string non_thinking_prompt = render_chat_template(
-        messages, ChatFormat::QWEN3, true, disabled.thinking_enabled);
-    const std::string non_thinking_suffix = "<think>\n\n</think>\n\n";
-    TEST_ASSERT(non_thinking_prompt.size() >= non_thinking_suffix.size());
-    TEST_ASSERT(non_thinking_prompt.compare(
-        non_thinking_prompt.size() - non_thinking_suffix.size(),
-        non_thinking_suffix.size(), non_thinking_suffix) == 0);
-
-    const ParsedRequest enabled = resolve_qwen_reasoning({
-        {"chat_template_kwargs", {{"enable_thinking", true}}},
-    }, true);
-    TEST_ASSERT(enabled.thinking_enabled);
-
-    const ParsedRequest legacy_other_model = resolve_qwen_reasoning(
-        json::object(), /*default_enable_thinking=*/false);
-    TEST_ASSERT(!legacy_other_model.thinking_enabled);
 }
 
 TEST_CASE(ServerUnitFixture, test_deepseek_reasoning_effort_aliases_and_budgets) {

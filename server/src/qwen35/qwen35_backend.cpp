@@ -2759,10 +2759,33 @@ bool Qwen35Backend::do_spec_decode(int committed, int n_gen,
     // 8192 is deliberately above every prompt in the short-context benchmarks
     // this engine is tuned for, so high-acceptance completion workloads, where
     // the wide block earns its keep, are untouched.
-    constexpr int kLongCtxNarrowTokens = 8192;
+    // Both knobs are overridable from the environment for A/B measurement
+    // (P1.1, 2026-08-30): DFLASH_LONGCTX_NARROW_TOKENS (threshold, >= 0; 0 = narrow
+    // from the first token) and DFLASH_LONGCTX_MIN_VERIFY (floor, >= 1; the block
+    // itself is still the upper bound). Defaults reproduce the shipped behaviour
+    // exactly; unparsable or out-of-range values fall back to the defaults and
+    // are reported once in the banner below.
+    static const int kLongCtxNarrowTokens = []() {
+        const char * e = std::getenv("DFLASH_LONGCTX_NARROW_TOKENS");
+        if (e == nullptr || *e == '\0') return 8192;
+        char * end = nullptr; const long v = std::strtol(e, &end, 10);
+        return (end != e && *end == '\0' && v >= 0 && v <= (1L << 20)) ? (int)v : 8192;
+    }();
     // Narrowing floor, chosen to match the shipped DFlash2 checkpoint's
     // published block of 8 (clamped to q_len below for narrower checkpoints).
-    constexpr int kLongCtxMinVerify = 8;
+    static const int kLongCtxMinVerify = []() {
+        const char * e = std::getenv("DFLASH_LONGCTX_MIN_VERIFY");
+        if (e == nullptr || *e == '\0') return 8;
+        char * end = nullptr; const long v = std::strtol(e, &end, 10);
+        return (end != e && *end == '\0' && v >= 1 && v <= 64) ? (int)v : 8;
+    }();
+    static std::atomic<bool> s_cap_cfg_logged{false};
+    if (!s_cap_cfg_logged.exchange(true)) {
+        std::fprintf(stderr,
+            "[qwen35-spec] long-context verify cap: narrow_tokens=%d min_verify=%d%s\n",
+            kLongCtxNarrowTokens, kLongCtxMinVerify,
+            (std::getenv("DFLASH_LONGCTX_NARROW_TOKENS") || std::getenv("DFLASH_LONGCTX_MIN_VERIFY")) ? " (from env)" : " (defaults)");
+    }
     const int q_len = dw_.block_size > 0 ? dw_.block_size : DFLASH27B_DRAFT_BLOCK_SIZE;
     // This caps the VERIFY batch only; the drafter still proposes a full q_len
     // block. Narrowing the draft instead would leave the tail rows of the

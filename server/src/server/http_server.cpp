@@ -31,6 +31,7 @@
 #endif
 
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <cerrno>
 #include <chrono>
@@ -900,6 +901,7 @@ json build_props_body(const ServerConfig & config,
             {"max_bytes",       tms.max_bytes},
             {"current_entries", tms.current_entries},
             {"current_bytes",   tms.current_bytes},
+            {"fallback_renders", tool_call_fallback_renders()},
         }},
         // The C++ daemon is linked in-process; if /props is responding,
         // the daemon is alive by construction.
@@ -965,6 +967,56 @@ std::string render_tool_call_xml(const std::string & name, const json & argument
     return out;
 }
 
+// Fallback rendering for OpenAI `tool_calls` whose raw generated text is not
+// in ToolMemory (fresh process after a restart, calls produced by another
+// server, partial eviction, empty ids). Without this the assistant turn was
+// rendered from `content` alone and every historical tool call vanished from
+// the prompt while its tool result stayed (measured on a resumed dsh session:
+// 14 304 prompt tokens instead of ~118k; ~101k tokens of `write` arguments
+// dropped). The dialect matches QWEN3_TOOL_SUFFIX and tool_parser format 1:
+//   <tool_call>\n<function=NAME>\n<parameter=K>\nV\n</parameter>\n</function>\n</tool_call>
+// `arguments` may be a JSON string (OpenAI), an object (llama-server
+// autoparser), or unparsable text — the last is kept verbatim under a single
+// `arguments` parameter: never drop what the model said it did.
+static std::atomic<size_t> g_tool_call_fallback_renders{0};
+
+size_t tool_call_fallback_renders() {
+    return g_tool_call_fallback_renders.load();
+}
+
+std::string render_tool_calls_fallback(const json & tool_calls) {
+    std::string out;
+    for (const auto & tc : tool_calls) {
+        if (!tc.is_object()) continue;
+        const json fn = tc.contains("function") && tc["function"].is_object()
+            ? tc["function"] : tc;
+        const std::string name = fn.value("name", "");
+        if (name.empty()) continue;
+        json args = json::object();
+        if (fn.contains("arguments")) {
+            const json & a = fn["arguments"];
+            if (a.is_object()) {
+                args = a;
+            } else if (a.is_string()) {
+                const std::string text = a.get<std::string>();
+                json parsed = json::parse(text, nullptr, /*allow_exceptions=*/false);
+                if (parsed.is_object()) {
+                    args = parsed;
+                } else if (!text.empty()) {
+                    args = json{{"arguments", text}};
+                }
+            } else if (!a.is_null()) {
+                args = json{{"arguments", a.dump()}};
+            }
+        }
+        if (!out.empty()) out += "\n";
+        out += "<tool_call>\n";
+        out += render_tool_call_xml(name, args);
+        out += "</tool_call>";
+    }
+    return out;
+}
+
 std::vector<ChatMessage> normalize_chat_messages(
     const json & messages,
     ApiFormat format,
@@ -973,6 +1025,7 @@ std::vector<ChatMessage> normalize_chat_messages(
     std::vector<std::string> system_parts;
     std::vector<std::string> response_call_ids;
     std::string response_call_fallback;
+    size_t fallback_rendered = 0;
 
     auto flush_response_calls = [&]() {
         if (response_call_fallback.empty()) return;
@@ -1040,6 +1093,19 @@ std::vector<ChatMessage> normalize_chat_messages(
                         }
                     }
                 }
+                // No raw replay available: rebuild the tool calls from the
+                // structured payload instead of dropping them (see
+                // render_tool_calls_fallback).
+                if (cm.role == "assistant" && m.contains("tool_calls") &&
+                    m["tool_calls"].is_array() && !m["tool_calls"].empty()) {
+                    const std::string rendered =
+                        render_tool_calls_fallback(m["tool_calls"]);
+                    if (!rendered.empty()) {
+                        if (!cm.content.empty()) cm.content += "\n\n";
+                        cm.content += rendered;
+                        fallback_rendered += m["tool_calls"].size();
+                    }
+                }
             }
 
             if (format == ApiFormat::RESPONSES &&
@@ -1061,6 +1127,14 @@ std::vector<ChatMessage> normalize_chat_messages(
             merged_system += system_parts[i];
         }
         chat_msgs.insert(chat_msgs.begin(), {"system", merged_system});
+    }
+
+    if (fallback_rendered > 0) {
+        g_tool_call_fallback_renders.fetch_add(fallback_rendered);
+        std::fprintf(stderr,
+                     "[tool-replay] fallback rendered tool_calls=%zu (no raw "
+                     "replay in ToolMemory; msgs=%zu)\n",
+                     fallback_rendered, chat_msgs.size());
     }
 
     return chat_msgs;

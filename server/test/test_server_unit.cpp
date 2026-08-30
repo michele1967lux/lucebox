@@ -3767,6 +3767,119 @@ TEST_CASE(ServerUnitFixture, test_normalize_responses_tool_followup_messages) {
     }
 }
 
+// ─── Chat Completions: tool_calls without raw replay (fix/render-tool-calls-without-replay) ───
+
+static json chat_history_with_write_call(const std::string & call_id,
+                                         const json & arguments) {
+    return json::array({
+        {{"role", "system"}, {"content", "rules"}},
+        {{"role", "user"}, {"content", "write the maze"}},
+        {
+            {"role", "assistant"},
+            {"content", "Writing the layout now."},
+            {"tool_calls", json::array({{
+                {"id", call_id},
+                {"type", "function"},
+                {"function", {{"name", "write"}, {"arguments", arguments}}}
+            }})}
+        },
+        {{"role", "tool"}, {"tool_call_id", call_id}, {"content", "Updated file"}}
+    });
+}
+
+TEST_CASE(ServerUnitFixture, test_normalize_chat_tool_calls_rendered_without_replay) {
+    ToolMemory tool_memory;  // fresh process: nothing remembered
+    const size_t before = tool_call_fallback_renders();
+    json messages = chat_history_with_write_call(
+        "call_fresh_001", R"({"file_path":"src/layout.ts","content":"const A = 1;\n"})");
+
+    auto chat_msgs = normalize_chat_messages(messages, ApiFormat::OPENAI_CHAT, tool_memory);
+    TEST_ASSERT(chat_msgs.size() == 4);
+    if (chat_msgs.size() == 4) {
+        const std::string & c = chat_msgs[2].content;
+        TEST_ASSERT(chat_msgs[2].role == "assistant");
+        TEST_ASSERT(c.rfind("Writing the layout now.\n\n<tool_call>\n<function=write>\n", 0) == 0);
+        TEST_ASSERT(c.find("<parameter=file_path>\nsrc/layout.ts\n</parameter>\n") != std::string::npos);
+        TEST_ASSERT(c.find("<parameter=content>\nconst A = 1;\n\n</parameter>\n") != std::string::npos);
+        TEST_ASSERT(c.find("</function>\n</tool_call>") == c.size() - std::string("</function>\n</tool_call>").size());
+        TEST_ASSERT(chat_msgs[3].role == "tool");
+        TEST_ASSERT(chat_msgs[3].content == "Updated file");
+    }
+    TEST_ASSERT(tool_call_fallback_renders() == before + 1);
+}
+
+TEST_CASE(ServerUnitFixture, test_normalize_chat_tool_calls_prefer_raw_replay) {
+    ToolMemory tool_memory;
+    const std::string raw = "\n\n<tool_call>\n<function=write>\n<parameter=file_path>\nsrc/layout.ts\n</parameter>\n</function>\n</tool_call>";
+    tool_memory.remember({"call_replay_001"}, raw);
+    const size_t before = tool_call_fallback_renders();
+    json messages = chat_history_with_write_call(
+        "call_replay_001", R"({"file_path":"src/layout.ts"})");
+
+    auto chat_msgs = normalize_chat_messages(messages, ApiFormat::OPENAI_CHAT, tool_memory);
+    TEST_ASSERT(chat_msgs.size() == 4);
+    if (chat_msgs.size() == 4) TEST_ASSERT(chat_msgs[2].content == raw);  // byte-identical replay, unchanged behaviour
+    TEST_ASSERT(tool_call_fallback_renders() == before);
+}
+
+TEST_CASE(ServerUnitFixture, test_normalize_chat_tool_calls_fallback_arguments_object_and_invalid) {
+    ToolMemory tool_memory;
+    // arguments already an object (llama-server autoparser style)
+    json obj_messages = chat_history_with_write_call(
+        "call_obj_001", json{{"file_path", "a.ts"}, {"lines", json::array({1, 2})}});
+    auto obj_msgs = normalize_chat_messages(obj_messages, ApiFormat::OPENAI_CHAT, tool_memory);
+    TEST_ASSERT(obj_msgs.size() == 4);
+    if (obj_msgs.size() == 4) {
+        TEST_ASSERT(obj_msgs[2].content.find("<parameter=file_path>\na.ts\n</parameter>\n") != std::string::npos);
+        TEST_ASSERT(obj_msgs[2].content.find("<parameter=lines>\n[1,2]\n</parameter>\n") != std::string::npos);
+    }
+    // arguments not valid JSON: kept verbatim, never dropped
+    json bad_messages = chat_history_with_write_call("call_bad_001", "{not json");
+    auto bad_msgs = normalize_chat_messages(bad_messages, ApiFormat::OPENAI_CHAT, tool_memory);
+    TEST_ASSERT(bad_msgs.size() == 4);
+    if (bad_msgs.size() == 4) {
+        TEST_ASSERT(bad_msgs[2].content.find("<function=write>\n<parameter=arguments>\n{not json\n</parameter>\n") != std::string::npos);
+    }
+    // empty content + empty arguments string: just the call, no leading blank lines
+    json empty_messages = chat_history_with_write_call("call_empty_001", "");
+    empty_messages[2]["content"] = "";
+    auto empty_msgs = normalize_chat_messages(empty_messages, ApiFormat::OPENAI_CHAT, tool_memory);
+    TEST_ASSERT(empty_msgs.size() == 4);
+    if (empty_msgs.size() == 4) {
+        TEST_ASSERT(empty_msgs[2].content == "<tool_call>\n<function=write>\n</function>\n</tool_call>");
+    }
+}
+
+TEST_CASE(ServerUnitFixture, test_normalize_chat_parallel_tool_calls_partial_memory_falls_back) {
+    ToolMemory tool_memory;
+    // Only one of two parallel ids is remembered: lookup is all-or-nothing,
+    // so the whole turn must be rebuilt from the payload.
+    tool_memory.remember({"call_par_001"}, "<tool_call>raw-one</tool_call>");
+    json messages = json::array({
+        {{"role", "user"}, {"content", "go"}},
+        {
+            {"role", "assistant"},
+            {"content", ""},
+            {"tool_calls", json::array({
+                {{"id", "call_par_001"}, {"type", "function"},
+                 {"function", {{"name", "read"}, {"arguments", R"({"file_path":"a"})"}}}},
+                {{"id", "call_par_002"}, {"type", "function"},
+                 {"function", {{"name", "read"}, {"arguments", R"({"file_path":"b"})"}}}}
+            })}
+        },
+        {{"role", "tool"}, {"tool_call_id", "call_par_001"}, {"content", "A"}},
+        {{"role", "tool"}, {"tool_call_id", "call_par_002"}, {"content", "B"}}
+    });
+    auto chat_msgs = normalize_chat_messages(messages, ApiFormat::OPENAI_CHAT, tool_memory);
+    TEST_ASSERT(chat_msgs.size() == 4);
+    if (chat_msgs.size() == 4) {
+        const std::string expected =
+            "<tool_call>\n<function=read>\n<parameter=file_path>\na\n</parameter>\n</function>\n</tool_call>\n"
+            "<tool_call>\n<function=read>\n<parameter=file_path>\nb\n</parameter>\n</function>\n</tool_call>";
+        TEST_ASSERT(chat_msgs[1].content == expected);
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // Placement config tests
 // ═══════════════════════════════════════════════════════════════════════

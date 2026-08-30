@@ -51,6 +51,11 @@
 
 namespace dflash::common {
 
+// Structured-payload fallback for OpenAI `tool_calls` with no raw replay in
+// ToolMemory (see http_server.cpp). Exposed for unit tests and /props.
+std::string render_tool_calls_fallback(const nlohmann::json & tool_calls);
+size_t tool_call_fallback_renders();
+
 using json = nlohmann::json;
 
 // ─── Forward declarations ───────────────────────────────────────────────

@@ -6,6 +6,7 @@
 // Build: cmake --build . --target test_server_unit
 // Run:   ./test_server_unit
 
+#include "scoped_env.h"
 #include "CppUnitTestFramework.hpp"
 
 #include "server/sse_emitter.h"
@@ -3217,6 +3218,70 @@ TEST_CASE(ServerUnitFixture, test_qwen_template_toggles_remain_renderer_only) {
     TEST_ASSERT(explicit_effort.reasoning_effort == "max");
     TEST_ASSERT(explicit_effort.per_req_phase1_cap == 500);
     TEST_ASSERT(explicit_effort.thinking_opt_in);
+}
+
+TEST_CASE(ServerUnitFixture, test_thinking_default_env_seeds_both_booleans) {
+    // DFLASH_THINKING_DEFAULT=1 is the server-side default for deployments
+    // whose client cannot send a thinking field. It must seed BOTH booleans:
+    // enable_thinking alone would be a bare template toggle (reasoning with
+    // no cap and no finish_details), which is exactly what this default
+    // exists to avoid.
+    {
+        const luce_test::ScopedEnvVar on("DFLASH_THINKING_DEFAULT", "1");
+        const ParsedRequest req = resolve_qwen_reasoning(json::object());
+        TEST_ASSERT(req.thinking_enabled);
+        TEST_ASSERT(req.thinking_opt_in);
+        // No effort is forced: the phase-1 cap stays unset so the scheduler
+        // falls back to config.think_max_tokens, the operator's CLI value.
+        TEST_ASSERT(req.reasoning_effort.empty());
+        TEST_ASSERT(req.per_req_phase1_cap == -1);
+    }
+
+    // Without the variable nothing changes.
+    {
+        const luce_test::ScopedEnvVar off("DFLASH_THINKING_DEFAULT", nullptr);
+        const ParsedRequest req = resolve_qwen_reasoning(json::object());
+        TEST_ASSERT(!req.thinking_enabled);
+        TEST_ASSERT(!req.thinking_opt_in);
+    }
+
+    // Any value other than "1" is as good as absent.
+    {
+        const luce_test::ScopedEnvVar other("DFLASH_THINKING_DEFAULT", "true");
+        const ParsedRequest req = resolve_qwen_reasoning(json::object());
+        TEST_ASSERT(!req.thinking_enabled);
+        TEST_ASSERT(!req.thinking_opt_in);
+    }
+
+    // The request still wins: an explicit opt-out clears both booleans, so a
+    // client is never trapped in thinking by the deployment default.
+    {
+        const luce_test::ScopedEnvVar on("DFLASH_THINKING_DEFAULT", "1");
+        const json opt_outs[] = {
+            {{"chat_template_kwargs", {{"enable_thinking", false}}}},
+            {{"chat_template_kwargs", {{"thinking", false}}}},
+            {{"thinking", {{"type", "disabled"}}}},
+            {{"reasoning_effort", "none"}},
+        };
+        for (const auto & body : opt_outs) {
+            const ParsedRequest req = resolve_qwen_reasoning(body);
+            TEST_ASSERT(!req.thinking_enabled);
+            TEST_ASSERT(!req.thinking_opt_in);
+            TEST_ASSERT(req.reasoning_effort.empty());
+        }
+    }
+
+    // And an explicit effort still selects its tier on top of the default.
+    {
+        const luce_test::ScopedEnvVar on("DFLASH_THINKING_DEFAULT", "1");
+        const ParsedRequest req = resolve_qwen_reasoning({
+            {"reasoning_effort", "max"},
+        });
+        TEST_ASSERT(req.thinking_enabled);
+        TEST_ASSERT(req.thinking_opt_in);
+        TEST_ASSERT(req.reasoning_effort == "max");
+        TEST_ASSERT(req.per_req_phase1_cap == 500);
+    }
 }
 
 TEST_CASE(ServerUnitFixture, test_pflash_placement_same_backend_local) {

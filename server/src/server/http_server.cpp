@@ -1912,14 +1912,50 @@ void apply_request_reasoning(
     // kwargs can still override whether the rendered prompt enables thinking.
     // Default: thinking OFF (Qwen3.6 thinking wrecks DFlash acceptance
     // rates; clients opt in explicitly).
-    bool enable_thinking = false;
+    //
+    // DFLASH_THINKING_DEFAULT=1 flips that default for deployments whose
+    // client cannot send a thinking field. It is OFF without the variable, so
+    // stock behaviour is unchanged.
+    //
+    // It seeds BOTH booleans, and that is a deliberate choice: they are not
+    // synonyms. `enable_thinking` decides whether the rendered prompt opens
+    // the thinking block; `thinking_opt_in` activates the budget envelope
+    // (phase-1 cap, reply budget, and the `finish_details` block in the
+    // response, see http_server.h). Seeding only the first would reproduce a
+    // bare template toggle: the model reasons with no cap and no accounting.
+    // The in-tree precedent is thinking.type="enabled", which also sets both
+    // without naming an effort.
+    //
+    // No effort tier is forced. With opt-in true and no effort set, the
+    // phase-1 cap stays -1 and the scheduler falls back to
+    // config.think_max_tokens (scheduler.cpp: effective_think_ceiling) — the
+    // value the operator already chose with --think-max-tokens. Forcing a
+    // tier here would silently override that CLI value with a card-derived
+    // one. The deepseek4 branch below still applies its own arch default.
+    //
+    // Consequence to know: with the envelope active the outcome depends on
+    // the request's max_tokens. When max_tokens <= hard_limit_reply_budget the
+    // level-2 force-close fires immediately and the thinking block closes
+    // empty (measured: max_tokens 400 with reply budget 4096 -> 1 reasoning
+    // token; max_tokens 8000 -> 91). Clients must pass a max_tokens above the
+    // reply budget for reasoning to survive.
+    //
+    // Read per call, not cached in a static: tests toggle it with
+    // luce_test::ScopedEnvVar, and one getenv per request is noise next to
+    // the request it serves.
+    const bool thinking_default = []() {
+        const char * e = std::getenv("DFLASH_THINKING_DEFAULT");
+        return e != nullptr && std::string(e) == "1";
+    }();
+
+    bool enable_thinking = thinking_default;
     int request_budget_tokens = -1;
     int request_reply_budget = -1;
     int effort_phase1_cap = -1;
     bool effort_set = false;
     std::string normalized_effort;
 
-    req.thinking_opt_in = false;
+    req.thinking_opt_in = thinking_default;
     req.per_req_phase1_cap = -1;
     req.per_req_reply_budget = -1;
 
